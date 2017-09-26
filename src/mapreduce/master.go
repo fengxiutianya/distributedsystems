@@ -62,6 +62,7 @@ func Sequential(jobName string, files []string, nreduce int,
 	reduceF func(string, []string) string,
 ) (mr *Master) {
 	mr = newMaster("master")
+	//运行mr，最后会一起执行合并
 	go mr.run(jobName, files, nreduce, func(phase jobPhase) {
 		switch phase {
 		case mapPhase:
