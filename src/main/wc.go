@@ -2,8 +2,13 @@ package main
 
 import (
 	"fmt"
-	"mapreduce"
+	"log"
 	"os"
+	"strconv"
+	"strings"
+	"unicode"
+
+	"../mapreduce"
 )
 
 //
@@ -15,6 +20,39 @@ import (
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// TODO: you have to write this function
+
+	// 查找连续的字母
+	// reg := regexp.MustCompile(`[A-Za-z]+`)
+	// tem := reg.FindAllString(contents, -1)
+
+	// f := func(c rune) bool {
+	// 	return !unicode.IsLetter(c)
+	// }
+	// tem := strings.FieldsFunc(contents, f)
+	// var ret []mapreduce.KeyValue
+
+	// wordCount := make(map[string]int)
+
+	// for i := 0; i < len(tem); i++ {
+	// 	lower := strings.ToLower(tem[i])
+	// 	wordCount[lower] = wordCount[lower] + 1
+	// }
+
+	// for key, val := range wordCount {
+	// 	// if strings.EqualFold(key, "I") {
+	// 	// 	fmt.Println(key, val)
+	// 	// }
+	// 	ret = append(ret, mapreduce.KeyValue{key, strconv.Itoa(val)})
+	// }
+	var res []mapreduce.KeyValue
+	values := strings.FieldsFunc(contents, func(c rune) bool {
+		return !unicode.IsLetter(c)
+	})
+	for _, v := range values {
+		res = append(res, mapreduce.KeyValue{v, "1"})
+	}
+
+	return res
 }
 
 //
@@ -24,6 +62,28 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 //
 func reduceF(key string, values []string) string {
 	// TODO: you also have to write this function
+	// var total int = 0
+	// for i := 0; i < len(values); i++ {
+	// 	val, _ := strconv.Atoi(values[i])
+	// 	total += val
+	// }
+
+	// if strings.EqualFold(key, "I") {
+	// 	fmt.Println(key, total, len(values))
+	// }
+	// return strconv.Itoa(total)
+	var sum int
+
+	for _, v := range values {
+		count, err := strconv.Atoi(v)
+		if err != nil {
+			log.Fatal("reduceF: strconv string to int error: ", err)
+		}
+		sum += count
+	}
+
+	return strconv.Itoa(sum)
+
 }
 
 // Can be run in 3 ways:

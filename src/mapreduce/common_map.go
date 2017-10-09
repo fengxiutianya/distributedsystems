@@ -65,13 +65,16 @@ func doMap(
 			return
 		}
 	}
-	//读出给定文件的名字
+	//从给定的文件名中读内容
 	contents, err := ioutil.ReadFile(inFile)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	//利用系统给定的函数，把内容转换成keyValue
 	KeyValue := mapF(inFile, string(contents))
 
+	//利用系统函数，把内容存储到中间文件中去
 	for key, value := range KeyValue {
 		//Call ihash() (see below) on each key, mod nReduce, to pick r for a key/value pair.
 		n := ihash(string(key)) % nReduce

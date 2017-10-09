@@ -54,59 +54,107 @@ func doReduce(
 	reduceF func(key string, values []string) string,
 ) {
 
-	reduceResult := make(map[string][]string)
-	//1. it reads the intermediate key/value pairs (produced by the map phase) for this task,
-	//
+	// reduceResult := make(map[string][]string)
+	// //1. it reads the intermediate key/value pairs (produced by the map phase) for this task,
+	// //
+	// // enc := json.NewEncoder(routFile)
+	// for i := 0; i < nMap; i++ {
+	// 	//intermediate file name
+	// 	intermediateName := reduceName(jobName, i, reduceTaskNumber)
+	// 	//打开文件
+	// 	tmpfile, err1 := os.OpenFile(intermediateName, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// 	if err1 != nil {
+	// 		log.Fatal(err1)
+	// 		return
+	// 	}
+	// 	dec := json.NewDecoder(tmpfile)
+
+	// 	for dec.More() {
+	// 		var m map[string]string
+	// 		// decode an array value (Message)
+	// 		err := dec.Decode(&m)
+	// 		if err != nil {
+	// 			log.Fatal(err)
+	// 		}
+	// 		reduceResult[m["Key"]] = append(reduceResult[m["Key"]], m["Value"])
+
+	// 	}
+	// 	if err1 = tmpfile.Close(); err1 != nil {
+	// 		// log.Fatal(err1)
+	// 	}
+
+	// }
+	// var keys []string
+	// for key, _ := range reduceResult {
+	// 	keys = append(keys, key)
+	// }
+
+	// //2. sorts the intermediate key/value pairs by key, calls the user-defined reduce function (reduceF) for each key,
+	// //3. and writes the output to disk.
+	// sort.Strings(keys)
+
+	// //输出的文件
+	// routFile, err := os.OpenFile(outFile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// 	return
+	// }
+	// //存储到输出文件中去
 	// enc := json.NewEncoder(routFile)
+	// for _, val := range keys {
+	// 	enc.Encode(KeyValue{val, reduceF(val, reduceResult[val])})
+	// }
+	// //关闭输出文件
+	// if err = routFile.Close(); err != nil {
+	// 	log.Fatal(err)
+	// }
+	keyValues := make(map[string][]string, 0)
+
 	for i := 0; i < nMap; i++ {
-		//intermediate file name
-		intermediateName := reduceName(jobName, i, reduceTaskNumber)
-
-		//打开文件
-		tmpfile, err1 := os.OpenFile(intermediateName, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-		if err1 != nil {
-			log.Fatal(err1)
-			return
+		fileName := reduceName(jobName, i, reduceTaskNumber)
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatal("doReduce: open intermediate file ", fileName, " error: ", err)
 		}
-		dec := json.NewDecoder(tmpfile)
+		defer file.Close()
 
-		for dec.More() {
-			var m map[string]string
-			// decode an array value (Message)
-			err := dec.Decode(&m)
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+
+			err := dec.Decode(&kv)
 			if err != nil {
-				log.Fatal(err)
+				break
 			}
-			reduceResult[m["Key"]] = append(reduceResult[m["Key"]], m["Value"])
 
+			_, ok := keyValues[kv.Key]
+			if !ok {
+				keyValues[kv.Key] = make([]string, 0)
+			}
+			keyValues[kv.Key] = append(keyValues[kv.Key], kv.Value)
 		}
-		if err1 = tmpfile.Close(); err1 != nil {
-			// log.Fatal(err1)
-		}
-
 	}
+
 	var keys []string
-	for key, _ := range reduceResult {
-		keys = append(keys, key)
-	}
 
-	//2. sorts the intermediate key/value pairs by key, calls the user-defined reduce function (reduceF) for each key,
-	//3. and writes the output to disk.
+	for k, _ := range keyValues {
+		keys = append(keys, k)
+	}
 	sort.Strings(keys)
 
-	//输出的文件
-	routFile, err := os.OpenFile(outFile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	mergeFileName := mergeName(jobName, reduceTaskNumber)
+	mergeFile, err := os.Create(mergeFileName)
 	if err != nil {
-		log.Fatal(err)
-		return
+		log.Fatal("doReduce: create merge file ", mergeFileName, " error: ", err)
 	}
-	enc := json.NewEncoder(routFile)
-	for _, val := range keys {
-		enc.Encode(KeyValue{val, reduceF(val, reduceResult[val])})
-	}
-	//关闭输出文件
-	if err = routFile.Close(); err != nil {
-		log.Fatal(err)
-	}
+	defer mergeFile.Close()
 
+	enc := json.NewEncoder(mergeFile)
+	for _, k := range keys {
+		res := reduceF(k, keyValues[k])
+		err := enc.Encode(&KeyValue{k, res})
+		if err != nil {
+			log.Fatal("doReduce: encode error: ", err)
+		}
+	}
 }
