@@ -3,7 +3,6 @@ package mapreduce
 import (
 	"encoding/json"
 	"hash/fnv"
-	"io/ioutil"
 	"log"
 	"os"
 )
@@ -11,11 +10,8 @@ import (
 // doMap manages one map task: it reads one of the input files
 // (inFile), calls the user-defined map function (mapF) for that file's
 // contents, and partitions the output into nReduce intermediate files.
-// Each intermediate file contains a prefix,the map task number,
-// and the reduce task number
-
+// Each intermediate file contains a prefix,the map task number,and the reduce task number
 // Call ihash() (see below) on each key, mod nReduce, to pick r for a key/value pair.
-
 // mapF() is the map function provided by the application. The first
 // argument should be the input file name, though the map function
 // typically ignores it. The second argument should be the entire
@@ -53,42 +49,48 @@ func doMap(
 	mapF func(file string, contents string) []KeyValue,
 ) {
 
-	//创建intermediate的文件
-	var intermediate = make([]*os.File, nReduce)
-	var err error
-	for i := 0; i < nReduce; i++ {
-		//得到中间为文件的名字
-		intermediateName := reduceName(jobName, mapTaskNumber, i)
-		intermediate[i], err = os.OpenFile(intermediateName, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-	}
-	//从给定的文件名中读内容
-	contents, err := ioutil.ReadFile(inFile)
+	file, err := os.Open(inFile)
+	defer file.Close()
+
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("打开文件失败", err)
 	}
-
-	//利用系统给定的函数，把内容转换成keyValue
-	KeyValue := mapF(inFile, string(contents))
-
-	//利用系统函数，把内容存储到中间文件中去
-	for key, value := range KeyValue {
-		//Call ihash() (see below) on each key, mod nReduce, to pick r for a key/value pair.
-		n := ihash(string(key)) % nReduce
-		enc := json.NewEncoder(intermediate[n])
-		enc.Encode(&value)
+	fileInfo, err := file.Stat()
+	if err != nil {
+		log.Fatal("获取文件信息失败", err)
 	}
+	contents := make([]byte, fileInfo.Size())
+	//当没有新变量在左边，又和一个 _ 一起时，不需要加上 : 这个符号
+	_, err = file.Read(contents)
 
-	//关闭所有文件
+	if err != nil {
+		log.Fatal("获取文件内容失败", err)
+	}
+	keyvalues := mapF(inFile, string(contents))
+
 	for i := 0; i < nReduce; i++ {
-		if err = intermediate[i].Close(); err != nil {
-			log.Fatal(err)
+
+		intermidateName := reduceName(jobName, mapTaskNumber, i)
+		reduceFile, err := os.Create(intermidateName)
+
+		if err != nil {
+			log.Fatal("创建文件失败", err)
+		}
+		defer reduceFile.Close()
+
+		enc := json.NewEncoder(reduceFile)
+		//这个地点要注意，[]keyvalues 是一个结构体类型的数组 key 是0 1 2 value 是struct
+		// index,value = range 数组   key,value = range map 注意区别
+		//ihash 是通过 KeyValue 结构体里面的key来做hash
+		for _, key := range keyvalues {
+			if ihash(key.Key)%nReduce == i {
+				err := enc.Encode(&key)
+				if err != nil {
+					log.Fatal("写入文件失败", err)
+				}
+			}
 		}
 	}
-
 }
 
 func ihash(s string) int {

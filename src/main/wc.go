@@ -20,38 +20,29 @@ import (
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// TODO: you have to write this function
-
-	// 查找连续的字母
-	// reg := regexp.MustCompile(`[A-Za-z]+`)
-	// tem := reg.FindAllString(contents, -1)
-
-	// f := func(c rune) bool {
-	// 	return !unicode.IsLetter(c)
-	// }
-	// tem := strings.FieldsFunc(contents, f)
-	// var ret []mapreduce.KeyValue
-
-	// wordCount := make(map[string]int)
-
-	// for i := 0; i < len(tem); i++ {
-	// 	lower := strings.ToLower(tem[i])
-	// 	wordCount[lower] = wordCount[lower] + 1
-	// }
-
-	// for key, val := range wordCount {
-	// 	// if strings.EqualFold(key, "I") {
-	// 	// 	fmt.Println(key, val)
-	// 	// }
-	// 	ret = append(ret, mapreduce.KeyValue{key, strconv.Itoa(val)})
-	// }
 	var res []mapreduce.KeyValue
-	values := strings.FieldsFunc(contents, func(c rune) bool {
-		return !unicode.IsLetter(c)
-	})
+	values := strings.FieldsFunc(contents,
+		func(c rune) bool {
+			return !unicode.IsLetter(c)
+		})
+	//此处注意理解mapreduce论文中wordcout 对于每一个单词的计数继承1
 	for _, v := range values {
 		res = append(res, mapreduce.KeyValue{v, "1"})
 	}
 
+	//下面是进行的优化，把每一个文件里面的相同的单词进行计数
+	// tem := make(map[string]int)
+
+	// for _, v := range values {
+	// 	_, ok := tem[v]
+	// 	if !ok {
+	// 		tem[v] = 0
+	// 	}
+	// 	tem[v]++
+	// }
+	// for key, v := range tem {
+	// 	res = append(res, mapreduce.KeyValue{key, strconv.Itoa(v)})
+	// }
 	return res
 }
 
@@ -70,7 +61,6 @@ func reduceF(key string, values []string) string {
 		}
 		sum += count
 	}
-
 	return strconv.Itoa(sum)
 
 }
