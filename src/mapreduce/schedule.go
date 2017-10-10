@@ -11,7 +11,6 @@ import (
 // the mapFiles argument holds the names of the files that are the inputs to the map phase, one per map task.
 
 // nReduce is the number of reduce tasks.
-
 // the registerChan argument yields a stream of registered workers; each item is the worker's RPC address,
 // suitable for passing to call().
 // registerChan will yield all existing registered workers (if any) and new ones as they register.
@@ -22,10 +21,7 @@ func schedule(jobName string,
 
 	var ntasks int
 	var n_other int // number of inputs (for reduce) or outputs (for map)
-
-	//得到map或者renduce的信息
 	switch phase {
-
 	case mapPhase:
 		ntasks = len(mapFiles)
 		n_other = nReduce
@@ -43,11 +39,12 @@ func schedule(jobName string,
 	//
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 	//
+
 	var wg sync.WaitGroup
+
 	for i := 0; i < ntasks; i++ {
 		wg.Add(1)
-
-		go func(taskNum int, n_other int, phase jobPhase) {
+		go func(taskNum int, nios int, phase jobPhase) {
 			defer wg.Done()
 			for {
 				var args DoTaskArgs
@@ -57,7 +54,7 @@ func schedule(jobName string,
 				args.File = mapFiles[taskNum]
 				args.Phase = phase
 				args.TaskNumber = taskNum
-				args.NumOtherPhase = n_other
+				args.NumOtherPhase = nios
 
 				ok := call(worker, "Worker.DoTask", &args, new(struct{}))
 				if ok {
@@ -69,7 +66,6 @@ func schedule(jobName string,
 			}
 		}(i, n_other, phase)
 	}
-
 	wg.Wait()
 	fmt.Printf("Schedule: %v phase done\n", phase)
 }

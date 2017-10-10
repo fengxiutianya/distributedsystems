@@ -53,6 +53,61 @@ func doReduce(
 	nMap int, // the number of map tasks that were run ("M" in the paper)
 	reduceF func(key string, values []string) string,
 ) {
+
+	// reduceResult := make(map[string][]string)
+	// //1. it reads the intermediate key/value pairs (produced by the map phase) for this task,
+	// //
+	// // enc := json.NewEncoder(routFile)
+	// for i := 0; i < nMap; i++ {
+	// 	//intermediate file name
+	// 	intermediateName := reduceName(jobName, i, reduceTaskNumber)
+	// 	//打开文件
+	// 	tmpfile, err1 := os.OpenFile(intermediateName, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// 	if err1 != nil {
+	// 		log.Fatal(err1)
+	// 		return
+	// 	}
+	// 	dec := json.NewDecoder(tmpfile)
+
+	// 	for dec.More() {
+	// 		var m map[string]string
+	// 		// decode an array value (Message)
+	// 		err := dec.Decode(&m)
+	// 		if err != nil {
+	// 			log.Fatal(err)
+	// 		}
+	// 		reduceResult[m["Key"]] = append(reduceResult[m["Key"]], m["Value"])
+
+	// 	}
+	// 	if err1 = tmpfile.Close(); err1 != nil {
+	// 		// log.Fatal(err1)
+	// 	}
+
+	// }
+	// var keys []string
+	// for key, _ := range reduceResult {
+	// 	keys = append(keys, key)
+	// }
+
+	// //2. sorts the intermediate key/value pairs by key, calls the user-defined reduce function (reduceF) for each key,
+	// //3. and writes the output to disk.
+	// sort.Strings(keys)
+
+	// //输出的文件
+	// routFile, err := os.OpenFile(outFile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// 	return
+	// }
+	// //存储到输出文件中去
+	// enc := json.NewEncoder(routFile)
+	// for _, val := range keys {
+	// 	enc.Encode(KeyValue{val, reduceF(val, reduceResult[val])})
+	// }
+	// //关闭输出文件
+	// if err = routFile.Close(); err != nil {
+	// 	log.Fatal(err)
+	// }
 	keyValues := make(map[string][]string, 0)
 
 	for i := 0; i < nMap; i++ {
@@ -89,7 +144,6 @@ func doReduce(
 
 	mergeFileName := mergeName(jobName, reduceTaskNumber)
 	mergeFile, err := os.Create(mergeFileName)
-
 	if err != nil {
 		log.Fatal("doReduce: create merge file ", mergeFileName, " error: ", err)
 	}
