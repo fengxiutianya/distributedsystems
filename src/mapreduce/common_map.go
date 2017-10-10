@@ -3,7 +3,6 @@ package mapreduce
 import (
 	"encoding/json"
 	"hash/fnv"
-	"io/ioutil"
 	"log"
 	"os"
 )
@@ -52,43 +51,47 @@ func doMap(
 	nReduce int, // the number of reduce task that will be run ("R" in the paper)
 	mapF func(file string, contents string) []KeyValue,
 ) {
+	//打开文件
+	inputFile, err := os.Open(inFile)
 
-	//创建intermediate的文件
-	var intermediate = make([]*os.File, nReduce)
-	var err error
-	for i := 0; i < nReduce; i++ {
-		//得到中间为文件的名字
-		intermediateName := reduceName(jobName, mapTaskNumber, i)
-		intermediate[i], err = os.OpenFile(intermediateName, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-	}
-	//从给定的文件名中读内容
-	contents, err := ioutil.ReadFile(inFile)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("doMap: open input file ", inFile, " error: ", err)
 	}
-
-	//利用系统给定的函数，把内容转换成keyValue
-	KeyValue := mapF(inFile, string(contents))
-
-	//利用系统函数，把内容存储到中间文件中去
-	for key, value := range KeyValue {
-		//Call ihash() (see below) on each key, mod nReduce, to pick r for a key/value pair.
-		n := ihash(string(key)) % nReduce
-		enc := json.NewEncoder(intermediate[n])
-		enc.Encode(&value)
+	defer inputFile.Close()
+	//获取文件的信息
+	fileInfo, err := inputFile.Stat()
+	if err != nil {
+		log.Fatal("doMap: getstat input file ", inFile, " error: ", err)
 	}
+	//创建用于存储数据的切片
+	data := make([]byte, fileInfo.Size())
+	//读取文件
+	_, err = inputFile.Read(data)
+	if err != nil {
+		log.Fatal("doMap: read input file ", inFile, " error: ", err)
+	}
+	//通过给定的函数来获取文件转换成的keyvalue
+	keyValues := mapF(inFile, string(data))
 
-	//关闭所有文件
 	for i := 0; i < nReduce; i++ {
-		if err = intermediate[i].Close(); err != nil {
-			log.Fatal(err)
+
+		fileName := reduceName(jobName, mapTaskNumber, i)
+		reduceFile, err := os.Create(fileName)
+		if err != nil {
+			log.Fatal("doMap: create intermediate file ", fileName, " error: ", err)
+		}
+		defer reduceFile.Close()
+
+		enc := json.NewEncoder(reduceFile)
+		for _, kv := range keyValues {
+			if ihash(kv.Key)%nReduce == i {
+				err := enc.Encode(&kv)
+				if err != nil {
+					log.Fatal("doMap: encode error: ", err)
+				}
+			}
 		}
 	}
-
 }
 
 func ihash(s string) int {
