@@ -8,7 +8,7 @@ package raft
 // test with the original before submitting.
 //
 
-import "labrpc"
+import "../labrpc"
 import "log"
 import "sync"
 import "testing"
@@ -300,6 +300,7 @@ func (cfg *config) checkTerms() int {
 	for i := 0; i < cfg.n; i++ {
 		if cfg.connected[i] {
 			xterm, _ := cfg.rafts[i].GetState()
+
 			if term == -1 {
 				term = xterm
 			} else if term != xterm {
