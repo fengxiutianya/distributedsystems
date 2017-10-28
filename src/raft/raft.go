@@ -311,8 +311,9 @@ type AppendEntryArgs struct {
 	LeaderCommit int        //leader 上已被提交了的索引号
 }
 type AppendEntryReply struct {
-	Term    int
-	Success bool
+	Term        int
+	Success     bool
+	CommitIndex int //用于接收来个都同意的
 }
 
 //
@@ -322,19 +323,88 @@ func (rf *Raft) AppendEntries(args AppendEntryArgs, reply *AppendEntryReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	//ingore old term
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 	} else {
-		rf.state = FOLLOWER
+		rf.state = FOLLOWER //初始化本地信息
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
-
 		reply.Term = rf.currentTerm
-		reply.Success = true
-		//此处还有没处理的信息
+
+		//don't contain an entry at prevLogIndex whose term matches prevLogTerm
+		if args.PrevLogIndex >= 0 &&
+			(len(rf.log)-1 < args.PrevLogIndex ||
+				rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+			//find including  the term of the conflicting entry
+			// and the first index it stores for that term
+			reply.CommitIndex = len(rf.log) - 1
+
+			if reply.CommitIndex > args.PrevLogIndex {
+				reply.CommitIndex = args.PrevLogIndex
+			}
+
+			//找到log中index最大的和args中prevlogTerm相同
+			for reply.CommitIndex >= 0 {
+				if rf.log[reply.CommitIndex].Term == args.PrevLogTerm {
+					break
+				}
+				reply.CommitIndex--
+			}
+			reply.Success = false
+		} else {
+			if args.Entries != nil {
+
+				//删除不相同的日志
+				rf.log = rf.log[:args.PrevLogIndex+1]
+				//复制log
+				rf.log = append(rf.log, args.Entries...)
+				reply.CommitIndex = len(rf.log) - 1
+
+				if args.LeaderCommit <= len(rf.log)-1 {
+					rf.commitIndex = args.LeaderCommit
+
+					go rf.commitLogs()
+
+				}
+				reply.Success = true
+
+			} else {
+
+				reply.CommitIndex = args.PrevLogIndex
+
+				if args.LeaderCommit <= len(rf.log)-1 {
+
+					rf.commitIndex = args.LeaderCommit
+					go rf.commitLogs()
+				}
+				reply.Success = true
+			}
+		}
 	}
 	rf.resetTimer()
+}
+
+//
+//提交日志
+//
+func (rf *Raft) commitLogs() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.commitIndex > len(rf.log)-1 {
+		rf.commitIndex = len(rf.log) - 1
+	}
+
+	//lastApplied 是最后一个被apply的，所以要加1
+	for index := rf.lastApplied + 1; index <= rf.commitIndex; index++ {
+		rf.applyMsg <- ApplyMsg{Index: index + 1, Command: rf.log[index].Command}
+	}
+
+	//提交后需要修改已经应用的日志数
+	rf.lastApplied = rf.commitIndex
+
 }
 
 //
@@ -348,39 +418,39 @@ func (rf *Raft) sendAppendEntryToFollower(server int,
 }
 
 //
-//给所有Followe发送log
+//给所有Follower发送log
+//此处不需要获得锁，此部分的所有操作只是发送logEntry
+//其他地点发送的时候会先获取锁的
 //
 func (rf *Raft) sendAppendEntryToALl() {
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		var args AppendEntryArgs
-		args.Term = rf.currentTerm
-		args.LeaderId = rf.me
-		//args.PrevLogIndex = rf.NextIndex[i] - 1
-		//// rf.logger.Printf("prevLogIndx:%v logs_term:%v", args.PrevLogIndex, len(rf.logs))
-		//if args.PrevLogIndex >= 0 {
-		//	args.PrevLogTerm = rf.logs[args.PrevLogIndex].Term
-		//}
-		//if rf.nextIndex[i] < len(rf.logs) {
-		//	args.Entries = rf.logs[rf.nextIndex[i]:]
-		//}
-		//args.LeaderCommit = rf.commitIndex
-
+		args := AppendEntryArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: rf.nextIndex[i] - 1,
+		}
+		if args.PrevLogIndex >= 0 {
+			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+		}
+		//复制要发送的LogEntry
+		if rf.nextIndex[i] < len(rf.log) {
+			args.Entries = append(args.Entries, rf.log[rf.nextIndex[i]])
+		}
+		args.LeaderCommit = rf.commitIndex
 		go func(server int, args AppendEntryArgs) {
 			var reply AppendEntryReply
 			ok := rf.sendAppendEntryToFollower(server, args, &reply)
 			if ok {
-				rf.handleAppendEntries(server, reply)
+				rf.handleAppendEntriesReply(server, reply)
 			}
 		}(i, args)
 	}
 }
-func (rf *Raft) handleAppendEntries(server int, reply AppendEntryReply) {
+func (rf *Raft) handleAppendEntriesReply(server int, reply AppendEntryReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.state != LEADER {
@@ -397,9 +467,37 @@ func (rf *Raft) handleAppendEntries(server int, reply AppendEntryReply) {
 		return
 	}
 	if reply.Success {
+		rf.nextIndex[server] = reply.CommitIndex + 1
+		rf.matchIndex[server] = reply.CommitIndex
 
+		applyCount := 1
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+			if rf.matchIndex[server] <= rf.matchIndex[i] {
+				applyCount++
+			}
+		}
+		//test1 := applyCount >= majority(len(rf.peers))
+		//test2 := rf.commitIndex < rf.matchIndex[server]
+		//test3 := false
+		//if rf.matchIndex[server] >= 0 {
+		//	test3 = rf.log[rf.matchIndex[server]].Term == rf.currentTerm
+		//	fmt.Println(rf.log[rf.matchIndex[server]].Term, rf.currentTerm)
+		//}
+		//
+		//fmt.Println(test1, test2, test3)
+		if applyCount >= majority(len(rf.peers)) &&
+			rf.commitIndex < rf.matchIndex[server] &&
+			rf.log[rf.matchIndex[server]].Term == rf.currentTerm {
+
+			rf.commitIndex = rf.matchIndex[server]
+			go rf.commitLogs()
+		}
 	} else {
-
+		//再一次发送信息
+		rf.nextIndex[server] = rf.commitIndex + 1
 		rf.sendAppendEntryToALl()
 	}
 }
@@ -408,8 +506,7 @@ func (rf *Raft) handleAppendEntries(server int, reply AppendEntryReply) {
 //用于设置定时任务
 //
 func (rf *Raft) resetTimer() {
-	//当服务启动时，启动一个goruntine来启动定时器
-	if rf.timer == nil {
+	if rf.timer == nil { //当服务启动时，启动一个goruntine来启动定时器
 		rf.timer = time.NewTimer(time.Millisecond * 1000)
 		go func() {
 			for {
@@ -418,9 +515,7 @@ func (rf *Raft) resetTimer() {
 			}
 		}()
 	}
-
-	new_out := HeartCycle //leader的过期时间是心跳时间，需要定时的发送心跳信息
-
+	new_out := HeartCycle   //leader的过期时间是心跳时间，需要定时的发送心跳信息
 	if rf.state != LEADER { //follower的过期时间，follower需要选取一个随机时间用于防止出现split vote
 		new_out = time.Millisecond * time.Duration(ElectionMinTime+
 			rand.Int63n(ElectionMaxTime-ElectionMinTime))
@@ -435,14 +530,12 @@ func (rf *Raft) handleTimer() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.state != LEADER {
-		//fmt.Println("          "+"me: ", rf.me, " term: ", rf.currentTerm, " state: ", rf.state)
+	if rf.state != LEADER { //开始election
 
 		rf.state = CANDIDATE
 		rf.currentTerm += 1
 		rf.votedFor = rf.me
 		rf.granted_vote_totals = 1
-		rf.persist()
 
 		args := RequestVoteArgs{
 			Term:         rf.currentTerm,
@@ -453,12 +546,12 @@ func (rf *Raft) handleTimer() {
 		if len(rf.log) > 0 {
 			args.LastLogTerm = rf.log[args.LastLogIndex].Term
 		}
-
+		//给所有服务器发起投票请求
 		for server := 0; server < len(rf.peers); server++ {
 			if server == rf.me {
 				continue
 			}
-
+			//使用goroutine 来加速函数的返回
 			go func(server int, args RequestVoteArgs) {
 				var reply RequestVoteReply
 				ok := rf.sendRequestVote(server, args, &reply)
@@ -466,10 +559,8 @@ func (rf *Raft) handleTimer() {
 					rf.handleRequestVoteReply(reply)
 				}
 			}(server, args)
-
 		}
 	} else {
-		//fmt.Println("send      "+"me: ", rf.me, " term: ", rf.currentTerm, " state: ", rf.state)
 		rf.sendAppendEntryToALl()
 	}
 	rf.resetTimer()
@@ -489,11 +580,21 @@ func (rf *Raft) handleTimer() {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	index := -1
 	term := -1
 	isLeader := true
 
 	// Your code here (2B).
+	isLeader = rf.state == LEADER
+	if isLeader {
+		rf.log = append(rf.log, LogEntry{Command: command, Term: rf.currentTerm})
+		index = len(rf.log)
+		term = rf.currentTerm
+		rf.persist()
+	}
 
 	return index, term, isLeader
 }
@@ -550,6 +651,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
+//
+// 用于决定大多数是多少
+//
 func majority(len int) int {
 	return len/2 + 1
 }
