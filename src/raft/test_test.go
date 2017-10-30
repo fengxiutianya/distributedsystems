@@ -672,8 +672,6 @@ func TestFigure82C(t *testing.T) {
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.rafts[s] == nil {
-				cfg.start1(s)
-				cfg.connect(s)
 				nup += 1
 			}
 		}

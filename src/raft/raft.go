@@ -5,6 +5,9 @@ import (
 	"sync"
 	"time"
 
+	"bytes"
+	"encoding/gob"
+
 	"../labrpc"
 )
 
@@ -36,17 +39,6 @@ import (
 //   in the same server.
 //
 
-const (
-	LEADER    = "leader"
-	FOLLOWER  = "follower"
-	CANDIDATE = "candidate"
-)
-const (
-	HeartCycle      = time.Millisecond * 50
-	ElectionMinTime = 150
-	ElectionMaxTime = 300
-)
-
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -58,6 +50,17 @@ type ApplyMsg struct {
 	UseSnapshot bool   // ignore for lab2; only used in lab3
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
+
+const (
+	LEADER    = "leader"
+	FOLLOWER  = "follower"
+	CANDIDATE = "candidate"
+)
+const (
+	HeartCycle      = time.Millisecond * 50
+	ElectionMinTime = 150
+	ElectionMaxTime = 300
+)
 
 //
 //日志结构体
@@ -91,9 +94,10 @@ type Raft struct {
 
 	nextIndex  []int
 	matchIndex []int
-	applyMsg   chan ApplyMsg
 
-	state               string
+	applyMsg chan ApplyMsg
+	state    string
+
 	granted_vote_totals int
 
 	timer *time.Timer //定时器
@@ -118,13 +122,12 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	buf := new(bytes.Buffer)
+	enc := gob.NewEncoder(buf)
+	enc.Encode(rf.currentTerm)
+	enc.Encode(rf.votedFor)
+	enc.Encode(rf.log)
+	rf.persister.SaveRaftState(buf.Bytes())
 }
 
 //
@@ -133,12 +136,14 @@ func (rf *Raft) persist() {
 func (rf *Raft) readPersist(data []byte) {
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
+	if data != nil { // bootstrap without any state?
+		if data != nil {
+			buf := bytes.NewBuffer(data)
+			dec := gob.NewDecoder(buf)
+			dec.Decode(&rf.currentTerm)
+			dec.Decode(&rf.votedFor)
+			dec.Decode(&rf.log)
+		}
 	}
 }
 
@@ -174,13 +179,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	//默认设置当前投票为真
 	may_grant := true
 
-	//如果参数的周期小于当前周期，说明已经过时
-	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
 	if len(rf.log) > 0 { //日志可能为空
 
 		//首先判断Candidate's log is up-to-date
@@ -192,12 +190,21 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 			may_grant = false
 		}
 	}
+	//如果参数的周期小于当前周期，说明已经过时
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
 	//如果俩个周期相同，有可能同时为Candidate，，处理此部分条件
 	if args.Term == rf.currentTerm {
 		//说明当前服务器还没有投票
 		if may_grant && rf.votedFor == -1 {
 			rf.votedFor = args.CandidateId
+			rf.persist()
 		}
+
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = (rf.votedFor == args.CandidateId)
 		return
@@ -211,6 +218,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 		if may_grant {
 			rf.votedFor = args.CandidateId
+			rf.persist()
 		}
 		rf.resetTimer()
 		reply.Term = rf.currentTerm
@@ -255,52 +263,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 }
 
 //
-//处理投票结果
-//
-func (rf *Raft) handleRequestVoteReply(reply RequestVoteReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	//Vote server's Term is lower than current server's,ignore it
-	if reply.Term < rf.currentTerm {
-		return
-	}
-
-	if reply.Term > rf.currentTerm { //如果大于当前，则当前服务器过时
-		//更新当前状态信息
-		rf.currentTerm = reply.Term
-		rf.votedFor = -1
-		rf.state = FOLLOWER
-		rf.resetTimer()
-		return
-
-	}
-	//如果投了同意票，并且当前状态也还处于候选状态
-	if reply.VoteGranted && rf.state == CANDIDATE {
-		//票数加一
-		rf.granted_vote_totals += 1
-		//fmt.Println(" me : ", rf.me, " term : ", rf.currentTerm, " state : ", rf.state, rf.granted_vote_totals)
-
-		//判断当前票数是否获得绝大部分服务器支持
-		if rf.granted_vote_totals >= majority(len(rf.peers)) {
-
-			rf.state = LEADER                    //当前服务器状态更新为Leader
-			rf.sendAppendEntryToALl()            //给所有服务器发送心跳信息，停止选举
-			for i := 0; i < len(rf.peers); i++ { //初始化所有的nextIndex 和 matchIndex
-				if i == rf.me {
-					continue
-				}
-				rf.nextIndex[i] = len(rf.log)
-				rf.matchIndex[i] = -1
-			}
-			rf.resetTimer() //重新设置定时任务
-		}
-		return
-	}
-}
-
-//
-// replicate log struct
+// replicate logs struct
 //
 type AppendEntryArgs struct {
 	Term         int        //当前Leader的周期
@@ -331,7 +294,8 @@ func (rf *Raft) AppendEntries(args AppendEntryArgs, reply *AppendEntryReply) {
 		rf.state = FOLLOWER //初始化本地信息
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
-		reply.Term = rf.currentTerm
+		//
+		reply.Term = args.Term
 
 		//don't contain an entry at prevLogIndex whose term matches prevLogTerm
 		if args.PrevLogIndex >= 0 &&
@@ -352,7 +316,9 @@ func (rf *Raft) AppendEntries(args AppendEntryArgs, reply *AppendEntryReply) {
 				}
 				reply.CommitIndex--
 			}
+
 			reply.Success = false
+
 		} else {
 			if args.Entries != nil {
 
@@ -360,30 +326,72 @@ func (rf *Raft) AppendEntries(args AppendEntryArgs, reply *AppendEntryReply) {
 				rf.log = rf.log[:args.PrevLogIndex+1]
 				//复制log
 				rf.log = append(rf.log, args.Entries...)
-				reply.CommitIndex = len(rf.log) - 1
 
 				if args.LeaderCommit <= len(rf.log)-1 {
 					rf.commitIndex = args.LeaderCommit
-
 					go rf.commitLogs()
 
 				}
+				reply.CommitIndex = len(rf.log) - 1
 				reply.Success = true
 
 			} else {
 
-				reply.CommitIndex = args.PrevLogIndex
-
 				if args.LeaderCommit <= len(rf.log)-1 {
-
 					rf.commitIndex = args.LeaderCommit
 					go rf.commitLogs()
 				}
+				reply.CommitIndex = args.PrevLogIndex
 				reply.Success = true
 			}
 		}
 	}
+	rf.persist()
 	rf.resetTimer()
+}
+
+//
+//处理投票结果
+//
+func (rf *Raft) handleRequestVoteReply(reply RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	//Vote server's Term is lower than current server's,ignore it
+	if reply.Term < rf.currentTerm {
+		return
+	}
+
+	if reply.Term > rf.currentTerm { //如果大于当前，则当前服务器过时
+		//更新当前状态信息
+		rf.currentTerm = reply.Term
+		rf.votedFor = -1
+		rf.state = FOLLOWER
+		//rf.persist()
+		rf.resetTimer()
+		return
+
+	}
+	//如果投了同意票，并且当前状态也还处于候选状态
+	if reply.VoteGranted && rf.state == CANDIDATE {
+
+		rf.granted_vote_totals += 1 //得票数加一
+
+		if rf.granted_vote_totals >= majority(len(rf.peers)) { //判断当前票数是否获得绝大部分服务器支持
+
+			rf.state = LEADER                    //当前服务器状态更新为Leader
+			rf.sendAppendEntryToALl()            //给所有服务器发送心跳信息，停止选举
+			for i := 0; i < len(rf.peers); i++ { //初始化所有的nextIndex 和 matchIndex
+				if i == rf.me {
+					continue
+				}
+				rf.nextIndex[i] = len(rf.log)
+				rf.matchIndex[i] = -1
+			}
+			rf.resetTimer() //重新设置定时任务
+		}
+		return
+	}
 }
 
 //
@@ -438,7 +446,7 @@ func (rf *Raft) sendAppendEntryToALl() {
 		}
 		//复制要发送的LogEntry
 		if rf.nextIndex[i] < len(rf.log) {
-			args.Entries = append(args.Entries, rf.log[rf.nextIndex[i]])
+			args.Entries = rf.log[rf.nextIndex[i]:]
 		}
 		args.LeaderCommit = rf.commitIndex
 		go func(server int, args AppendEntryArgs) {
@@ -453,8 +461,8 @@ func (rf *Raft) sendAppendEntryToALl() {
 func (rf *Raft) handleAppendEntriesReply(server int, reply AppendEntryReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	if rf.state != LEADER {
-		// rf.logger.Printf("Lose leader\n")
 		return
 	}
 
@@ -466,6 +474,7 @@ func (rf *Raft) handleAppendEntriesReply(server int, reply AppendEntryReply) {
 		rf.resetTimer()
 		return
 	}
+
 	if reply.Success {
 		rf.nextIndex[server] = reply.CommitIndex + 1
 		rf.matchIndex[server] = reply.CommitIndex
@@ -479,15 +488,6 @@ func (rf *Raft) handleAppendEntriesReply(server int, reply AppendEntryReply) {
 				applyCount++
 			}
 		}
-		//test1 := applyCount >= majority(len(rf.peers))
-		//test2 := rf.commitIndex < rf.matchIndex[server]
-		//test3 := false
-		//if rf.matchIndex[server] >= 0 {
-		//	test3 = rf.log[rf.matchIndex[server]].Term == rf.currentTerm
-		//	fmt.Println(rf.log[rf.matchIndex[server]].Term, rf.currentTerm)
-		//}
-		//
-		//fmt.Println(test1, test2, test3)
 		if applyCount >= majority(len(rf.peers)) &&
 			rf.commitIndex < rf.matchIndex[server] &&
 			rf.log[rf.matchIndex[server]].Term == rf.currentTerm {
@@ -497,7 +497,7 @@ func (rf *Raft) handleAppendEntriesReply(server int, reply AppendEntryReply) {
 		}
 	} else {
 		//再一次发送信息
-		rf.nextIndex[server] = rf.commitIndex + 1
+		rf.nextIndex[server] = reply.CommitIndex + 1
 		rf.sendAppendEntryToALl()
 	}
 }
@@ -536,7 +536,7 @@ func (rf *Raft) handleTimer() {
 		rf.currentTerm += 1
 		rf.votedFor = rf.me
 		rf.granted_vote_totals = 1
-
+		rf.persist()
 		args := RequestVoteArgs{
 			Term:         rf.currentTerm,
 			CandidateId:  rf.me,
@@ -588,13 +588,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-	isLeader = rf.state == LEADER
-	if isLeader {
-		rf.log = append(rf.log, LogEntry{Command: command, Term: rf.currentTerm})
-		index = len(rf.log)
-		term = rf.currentTerm
-		rf.persist()
+	if rf.state != LEADER {
+		return index, term, isLeader
 	}
+
+	rf.log = append(rf.log, LogEntry{Command: command, Term: rf.currentTerm})
+	index = len(rf.log)
+	term = rf.currentTerm
+	rf.persist()
 
 	return index, term, isLeader
 }
